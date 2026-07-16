@@ -71,6 +71,7 @@ export class CeedlingAdapter implements TestAdapter {
 
     private ceedling: Ceedling
 
+    // loaded projects
     private projectData: Record<string, ProjectData> = {};
 
     private debugSessionDisposable: vscode.Disposable | undefined;
@@ -653,8 +654,9 @@ export class CeedlingAdapter implements TestAdapter {
                 this.watchedFileForAutorunList.push(file);
                 const projectPath = this.projectData[projectKey].absPath; // projectPath
                 const fullPath = path.resolve(projectPath, file);
-                fs.watchFile(fullPath, () => {
-                    this.autorunEmitter.fire();                    
+                fs.watchFile(fullPath, {interval: 1000}, () => {
+                    // this.autorunEmitter.fire();
+                    this.__load(false);
                 });
             }
         }
