@@ -125,23 +125,26 @@ export class CeedlingAdapter implements TestAdapter {
     }
 
     private async checkCeedlingVersion() {
-        try {
-            const version = await this.getCeedlingVersion();
-            this.logger.debug(`checkCeedlingVersion()=${version}`);
-            this.logger.debug(`MINIMUM_CEEDLING_VERSION=${MINIMUM_CEEDLING_VERSION}`);
-            this.logger.debug(`semver.lt result=${semver.lt(version, MINIMUM_CEEDLING_VERSION)}`);
-            this.ceedlingVersionChecked = true;
-            
-            if (semver.lt(version, MINIMUM_CEEDLING_VERSION)) {
-                const errorMessage = `Ceedling version ${version} is not supported. This extension requires Ceedling version ${MINIMUM_CEEDLING_VERSION} or higher. Please upgrade your Ceedling installation.`;
-                this.logger.error(errorMessage);
-                throw new Error(errorMessage);
-            }            
-        }
-        catch (e) {
-            this.logger.error(`Ceedling Version Check failed: ${util.format(e)}`);
-            throw e; // Re-throw to propagate the error
-        }
+        if (!this.ceedlingVersionChecked)
+        {
+            try {
+                const version = await this.getCeedlingVersion();
+                this.logger.debug(`checkCeedlingVersion()=${version}`);
+                this.logger.debug(`MINIMUM_CEEDLING_VERSION=${MINIMUM_CEEDLING_VERSION}`);
+                this.logger.debug(`semver.lt result=${semver.lt(version, MINIMUM_CEEDLING_VERSION)}`);
+                this.ceedlingVersionChecked = true;
+                
+                if (semver.lt(version, MINIMUM_CEEDLING_VERSION)) {
+                    const errorMessage = `Ceedling version ${version} is not supported. This extension requires Ceedling version ${MINIMUM_CEEDLING_VERSION} or higher. Please upgrade your Ceedling installation.`;
+                    this.logger.error(errorMessage);
+                    throw new Error(errorMessage);
+                }            
+            }
+            catch (e) {
+                this.logger.error(`Ceedling Version Check failed: ${util.format(e)}`);
+                throw e; // Re-throw to propagate the error
+            }
+        }        
     }
 
     async setup(): Promise<void> {
@@ -178,7 +181,9 @@ export class CeedlingAdapter implements TestAdapter {
             } as TestLoadFinishedEvent);
             return;
         }
+        
         this.watchFilesForReload(ymlPaths);
+
         let filetypes = ['assembly', 'header', 'source', 'test']
         for (const fileType of filetypes as (keyof ProjectData["files"])[]) {
             this.logger.debug(`loadFileLists(fileType=${fileType})`);
@@ -190,18 +195,30 @@ export class CeedlingAdapter implements TestAdapter {
         }
     }
 
-    async load(): Promise<void> {        
+    /**
+     * Load the ceedling project (if necessary) and discover test files
+     * @param forceSetup If true the ceedling configuration will alwaysbe reloaded
+     */
+    async __load(forceSetup: boolean)
+    {
         this.logger.trace(`load()`);
         this.testsEmitter.fire({ type: 'started' } as TestLoadStartedEvent);
 
-        if (this.projectNeedsReload)
+        if (forceSetup || this.projectNeedsReload)
         {            
             await this.setup()
             this.projectNeedsReload = false;
         }        
   
-        await this.buildTestSuiteInfo();
+        await this.discoverTests();
         this.testsEmitter.fire({ type: 'finished', suite: this.testSuiteInfo } as TestLoadFinishedEvent);
+    }
+
+    /**
+     * Called by VS Code
+     */
+    async load(): Promise<void> {        
+        this.__load(false);
     }
 
     async run(testIds: string[]): Promise<void> {
@@ -715,7 +732,7 @@ export class CeedlingAdapter implements TestAdapter {
                 if (!this.watchedFileForReloadList.includes(file)) {
                     this.watchedFileForReloadList.push(file);
                     fs.watchFile(file, () => {
-                        this.load();
+                        this.__load(true);
                     });
                 }
             }
@@ -866,7 +883,7 @@ export class CeedlingAdapter implements TestAdapter {
     /**
      * (Re-)discovers tests in test files and builds the test structure for the test explorer
      */
-    private buildTestSuiteInfo() {
+    private discoverTests() {
         this.testSuiteInfo = {
             type: 'suite',
             id: 'root',
