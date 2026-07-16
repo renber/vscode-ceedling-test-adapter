@@ -221,9 +221,15 @@ export class CeedlingAdapter implements TestAdapter {
     async run(testIds: string[]): Promise<void> {
         try {
             this.logger.trace(`run(testIds=${util.format(testIds)})`);
+            
+            let singleTest = '';
+            if (testIds.length == 1)    
+            {
+                const sepIdx = testIds[0].indexOf('::')
+                singleTest = testIds[0].substring(sepIdx+2)
+            }
 
-            // Ceedling always run the whole file and so run the top test suite
-            testIds = testIds.map((x) => x.replace(/::.*/, ''));
+            testIds = testIds.map((x) => x.replace(/::.*/, ''));      
 
             const testSuites = this.getTestSuitesFromTestIds(testIds);
             this.logger.debug(`run(testSuites=${util.format(testSuites)})`);
@@ -235,7 +241,7 @@ export class CeedlingAdapter implements TestAdapter {
             } as TestRunStartedEvent);
             this.isCanceled = false;
             for (const testSuite of testSuites) {
-                await this.runTestSuite(testSuite);
+                await this.runTestSuite(testSuite, singleTest);
                 if (this.isCanceled) {
                     break;
                 }
@@ -254,7 +260,13 @@ export class CeedlingAdapter implements TestAdapter {
     async debug(tests: string[]): Promise<void> {
         try {
 
-            // Ceedling always run the whole file and so run the top test suite
+            let singleTest = '';
+            if (tests.length == 1)    
+            {
+                const sepIdx = tests[0].indexOf('::')
+                singleTest = tests[0].substring(sepIdx+2)
+            }
+
             tests = tests.map((x) => x.replace(/::.*/, ''));
 
             // Determine test suite to run
@@ -273,7 +285,7 @@ export class CeedlingAdapter implements TestAdapter {
                 tests: testSuites.map(test => test.id)
             } as TestRunStartedEvent);
 	    // Execute ceedling test compilation
-            const args = this.getTestCommandArgs(testToExec);
+            const args = this.getTestCommandArgs(testToExec, singleTest);
             const result = await this.execCeedling(args, projectKey);
             if (result.error && /ERROR: Ceedling Failed/.test(result.stdout)) {
                 this.logger.showError("Could not compile test, see test output for more details.");
@@ -599,13 +611,19 @@ export class CeedlingAdapter implements TestAdapter {
         return line;
     }
 
-    private getTestCommandArgs(testToExec: string): Array<string> {
+    private getTestCommandArgs(testToExec: string, single_test: string = ''): Array<string> {
         // Keep only the filename of the test 'test/test_foo.c' -> 'test_foo.c'
         const testSuiteFilename = testToExec.replace(/^.*[\\/]/, "");
         const defaultTestCommandArgs = ["test:${TEST_ID}"];
         const testCommandArgs = this.getConfiguration()
             .get<Array<string>>('testCommandArgs', defaultTestCommandArgs)
             .map(x => x.replace("${TEST_ID}", testSuiteFilename));
+
+        if (single_test)
+        {
+            testCommandArgs.push(`--test_case=${single_test}`);
+        }
+
         return testCommandArgs;
     }
 
@@ -630,6 +648,7 @@ export class CeedlingAdapter implements TestAdapter {
         return ext;
     }
 
+    /*
     private detectTestSpecificDefines(ymlProjectData: any = undefined, testFileName: string) {
         if (ymlProjectData) {
             try {
@@ -640,7 +659,7 @@ export class CeedlingAdapter implements TestAdapter {
             } catch (e) { }
         }
         return false;
-    }
+    }*/
 
     private async getCeedlingVersion(): Promise<string> {
         const result = await this.execCeedling(['version']);
@@ -1176,7 +1195,7 @@ export class CeedlingAdapter implements TestAdapter {
         return ret;
     }
 
-    private async runTestSuite(testSuite: ExtendedTestSuiteInfo): Promise<void> {
+    private async runTestSuite(testSuite: ExtendedTestSuiteInfo, single_test: string = ''): Promise<void> {
         if (!testSuite.projectKey) {
             this.logger.error(`Could not determine project key for test suite ${testSuite.id}`);
             return;
@@ -1184,9 +1203,19 @@ export class CeedlingAdapter implements TestAdapter {
         this.testStatesEmitter.fire({ type: 'suite', suite: testSuite, state: 'running' } as TestSuiteEvent);
         const release = await this.ceedlingMutex.acquire();
         try {
-            for (const child of this.testInfoDfs(testSuite)) {
-                this.testStatesEmitter.fire({ type: child.type, test: child, state: 'running' } as TestEvent);
-            }
+            if (single_test)
+            {
+                for (const child of this.testInfoDfs(testSuite)) {
+                    if (child.id === `${testSuite.id}::${single_test}`)
+                    {
+                        this.testStatesEmitter.fire({ type: child.type, test: child, state: 'running' } as TestEvent);
+                    }                    
+                }
+            } else {
+                for (const child of this.testInfoDfs(testSuite)) {
+                    this.testStatesEmitter.fire({ type: child.type, test: child, state: 'running' } as TestEvent);
+                }
+            }            
             /* Delete the xml report from the artifacts */
             await this.deleteXmlReport(testSuite.projectKey);
             /* Run the test and get stdout */
@@ -1198,7 +1227,7 @@ export class CeedlingAdapter implements TestAdapter {
                 message = `stdout:\n${result.stdout}` + ((result.stderr.length != 0) ? `\nstderr:\n${result.stderr}` : ``);
             }
             else {
-                const args = this.getTestCommandArgs(testSuite.id);
+                const args = this.getTestCommandArgs(testSuite.id, single_test);
                 result = await this.execCeedling(args, testSuite.projectKey);
                 message = `stdout:\n${result.stdout}` + ((result.stderr.length != 0) ? `\nstderr:\n${result.stderr}` : ``);
             }
