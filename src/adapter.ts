@@ -1,11 +1,8 @@
 import { Mutex } from 'async-mutex';
-import child_process from 'child_process';
 import fs from 'fs';
 import yaml from 'js-yaml';
 import path from 'path';
 import semver from 'semver';
-import stripAnsi from 'strip-ansi';
-import tree_kill from 'tree-kill';
 import util from 'util';
 import vscode from 'vscode';
 import {
@@ -24,6 +21,7 @@ import { Logger } from './logger';
 import { ProblemMatcher, ProblemMatchingPattern } from './problemMatcher';
 import deepmerge from 'deepmerge';
 import { ProjectData, ProjectConfig, ExtendedTestSuiteInfo, ExtendedTestInfo } from './models';
+import { Ceedling } from './ceedling';
 
 const MINIMUM_CEEDLING_VERSION = '1.0.0';
 
@@ -37,8 +35,7 @@ export class CeedlingAdapter implements TestAdapter {
     private readonly autorunEmitter = new vscode.EventEmitter<void>();
 
     private readonly problemMatcher = new ProblemMatcher();
-
-    private ceedlingProcess: child_process.ChildProcess | undefined;
+    
     private debugTestExecutable: string = '';
 
     /**
@@ -70,6 +67,8 @@ export class CeedlingAdapter implements TestAdapter {
     private isPrettyTestFileLabelEnable: boolean = false;
     private ceedlingMutex: Mutex = new Mutex();
 
+    private ceedling: Ceedling
+
     private projectData: Record<string, ProjectData> = {};
 
     private debugSessionDisposable: vscode.Disposable | undefined;
@@ -95,6 +94,8 @@ export class CeedlingAdapter implements TestAdapter {
         this.disposables.push(this.autorunEmitter);
         this.disposables.push(this.problemMatcher);
 
+        this.ceedling = new Ceedling(workspaceFolder, logger)
+
         // Add debug session termination listener
         this.debugSessionDisposable = vscode.debug.onDidTerminateDebugSession((session) => {
             for (const projectKey in this.projectData) {
@@ -119,7 +120,7 @@ export class CeedlingAdapter implements TestAdapter {
             let affectedPrettyTestLabel = event.affectsConfiguration("ceedlingExplorer.prettyTestLabel");
             let affectedPrettyTestFileLabel = event.affectsConfiguration("ceedlingExplorer.prettyTestFileLabel");
             if (affectedPrettyTestLabel || affectedPrettyTestFileLabel || pathChanged) {
-                this.load();
+                this.__load(true);
             }
         })
     }
@@ -128,7 +129,7 @@ export class CeedlingAdapter implements TestAdapter {
         if (!this.ceedlingVersionChecked)
         {
             try {
-                const version = await this.getCeedlingVersion();
+                const version = await this.ceedling.getCeedlingVersion();
                 this.logger.debug(`checkCeedlingVersion()=${version}`);
                 this.logger.debug(`MINIMUM_CEEDLING_VERSION=${MINIMUM_CEEDLING_VERSION}`);
                 this.logger.debug(`semver.lt result=${semver.lt(version, MINIMUM_CEEDLING_VERSION)}`);
@@ -143,11 +144,18 @@ export class CeedlingAdapter implements TestAdapter {
             catch (e) {
                 this.logger.error(`Ceedling Version Check failed: ${util.format(e)}`);
                 throw e; // Re-throw to propagate the error
-            }
-        }        
+            }  
+        }             
     }
 
     async setup(): Promise<void> {
+
+        const shell = this.getConfiguration().get<string>('shellPath', 'null');
+        if (shell !== 'null')
+        {
+            this.ceedling.shell = shell
+        }
+
         try {
             await this.checkCeedlingVersion();
         } catch (e) {
@@ -205,7 +213,7 @@ export class CeedlingAdapter implements TestAdapter {
         this.testsEmitter.fire({ type: 'started' } as TestLoadStartedEvent);
 
         if (forceSetup || this.projectNeedsReload)
-        {            
+        {                        
             await this.setup()
             this.projectNeedsReload = false;
         }        
@@ -217,7 +225,7 @@ export class CeedlingAdapter implements TestAdapter {
     /**
      * Called by VS Code
      */
-    async load(): Promise<void> {        
+    async load(): Promise<void> {
         this.__load(false);
     }
 
@@ -256,6 +264,14 @@ export class CeedlingAdapter implements TestAdapter {
         }
     }
 
+    public execCeedlingAllProjects(args: ReadonlyArray<string>): Promise<any>[] {
+        const promises = []
+        for (const projectKey of this.getProjectKeys()) {
+            promises.push(this.ceedling.execCeedling(args, this.projectData[projectKey]));
+        }
+        return promises;
+    }
+
     getProjectKeyFromTest(testId: string): string {
         return testId.split('::')[0];
     }
@@ -289,7 +305,7 @@ export class CeedlingAdapter implements TestAdapter {
             } as TestRunStartedEvent);
 	    // Execute ceedling test compilation
             const args = this.getTestCommandArgs(testToExec, singleTest);
-            const result = await this.execCeedling(args, projectKey);
+            const result = await this.ceedling.execCeedling(args, this.projectData[projectKey]);
             if (result.error && /ERROR: Ceedling Failed/.test(result.stdout)) {
                 this.logger.showError("Could not compile test, see test output for more details.");
                 // trigger failure event
@@ -436,11 +452,7 @@ export class CeedlingAdapter implements TestAdapter {
     cancel(): void {
         this.logger.trace(`cancel()`);
         this.isCanceled = true;
-        if (this.ceedlingProcess !== undefined) {
-            if (this.ceedlingProcess.pid) {
-                tree_kill(this.ceedlingProcess.pid);
-            }
-        }
+        this.ceedling.cancel()
         // trigger test run finished event
         this.testStatesEmitter.fire({ type: 'finished' } as TestRunFinishedEvent);
     }
@@ -468,7 +480,7 @@ export class CeedlingAdapter implements TestAdapter {
         const sanityCheckErrors = [] as string[];
         const release = await this.ceedlingMutex.acquire();
         try {
-            const result = await this.execCeedling([`summary`]);
+            const result = await this.ceedling.execCeedling([`summary`], this.projectData[this.getProjectKeys()[0]]);
             if (result.error) {
                 return `Ceedling failed to run in the configured shell. ` +
                     'Please check if you can run `ceedling summary` in your shell.\n' +
@@ -508,11 +520,6 @@ export class CeedlingAdapter implements TestAdapter {
 
     private getConfiguration(): vscode.WorkspaceConfiguration {
         return vscode.workspace.getConfiguration('ceedlingExplorer', this.workspaceFolder.uri);
-    }
-
-    private getShellPath(): string | undefined {
-        const shellPath = this.getConfiguration().get<string>('shellPath', 'null');
-        return shellPath !== "null" ? shellPath : undefined;
     }
 
     private getProjectKeys(): string[] {
@@ -593,7 +600,7 @@ export class CeedlingAdapter implements TestAdapter {
     private async getFileListFromProject(fileType: string, projectKey: string): Promise<string[]> {
         const release = await this.ceedlingMutex.acquire();
         try {
-            const result = await this.execCeedling([`files:${fileType}`], projectKey);
+            const result = await this.ceedling.execCeedling([`files:${fileType}`], this.projectData[projectKey]);
             if (result.error) {
                 this.logger.error(`Failed to get the list of ${fileType} files: ${util.format(result)}`);
                 return [];
@@ -607,11 +614,6 @@ export class CeedlingAdapter implements TestAdapter {
         } finally {
             release();
         }
-    }
-
-    private getCeedlingCommand(args: ReadonlyArray<string>) {
-        const line = `ceedling ${args.join(" ")}`;
-        return line;
     }
 
     private getTestCommandArgs(testToExec: string, single_test: string = ''): Array<string> {
@@ -662,56 +664,7 @@ export class CeedlingAdapter implements TestAdapter {
             } catch (e) { }
         }
         return false;
-    }*/
-
-    private async getCeedlingVersion(): Promise<string> {
-        const result = await this.execCeedling(['version']);
-        const regex = new RegExp('^\\s*Ceedling\\s*(?:::|=>)\\s*(.*)(?:\\n)*$', 'gm');
-        const match = regex.exec(result.stdout);
-        if (!match) {
-            this.logger.error(`fail to get the ceedling version: ${util.format(result)}`);
-            return '0.0.0';
-        }
-        return match[1].trim();
-    }
-
-    private execCeedlingAllProjects(args: ReadonlyArray<string>): Promise<any>[] {
-        const promises = []
-        for (const projectKey of this.getProjectKeys()) {
-            promises.push(this.execCeedling(args, projectKey));
-        }
-        return promises;
-    }
-
-    private execCeedling(args: ReadonlyArray<string>, projectKey = Object.keys(this.projectData)[0]): Promise<any> {
-        let cwd = ".";
-        if (this.ceedlingVersionChecked && projectKey in this.projectData) {
-            let projectParam = ` --project project.yml`;
-            if (this.projectData[projectKey].ymlFileName != 'project.yml') {
-                projectParam += ` --mixin ${this.projectData[projectKey].ymlFileName}`;
-            }
-            args = [...args, projectParam];
-            cwd = this.projectData[projectKey].absPath;
-        }
-        let command = this.getCeedlingCommand(args);
-        const shell = this.getShellPath();
-        this.logger.debug(`execCeedling(args=${util.format(args)}) \ncommand=${command} \ncwd=${cwd} \nshell=${shell}`);
-        return new Promise<any>((resolve) => {
-            this.ceedlingProcess = child_process.exec(
-                command, { cwd: cwd, shell: shell },
-                (error, stdout, stderr) => {
-                    const ansiEscapeSequencesRemoved = this.getConfiguration().get<boolean>('ansiEscapeSequencesRemoved', true);
-                    if (ansiEscapeSequencesRemoved) {
-                        // Remove ansi colors from the outputs
-                        stdout = stripAnsi(stdout);
-                        stderr = stripAnsi(stderr);
-                    }
-                    this.logger.debug(`exec done`);
-                    resolve({ error, stdout, stderr });
-                },
-            )
-        })
-    }
+    }*/    
 
     private watchFilesForAutorun(projectKey: string, files: string[]): void {
         for (const file of files) {
@@ -1229,12 +1182,12 @@ export class CeedlingAdapter implements TestAdapter {
             let message = "";
             if (testSuite.isProjectRoot) {
                 const args = this.getTestCommandArgs('all');
-                result = await this.execCeedling(args, testSuite.projectKey);
+                result = await this.ceedling.execCeedling(args, this.projectData[testSuite.projectKey]);
                 message = `stdout:\n${result.stdout}` + ((result.stderr.length != 0) ? `\nstderr:\n${result.stderr}` : ``);
             }
             else {
                 const args = this.getTestCommandArgs(testSuite.id, single_test);
-                result = await this.execCeedling(args, testSuite.projectKey);
+                result = await this.ceedling.execCeedling(args, this.projectData[testSuite.projectKey]);
                 message = `stdout:\n${result.stdout}` + ((result.stderr.length != 0) ? `\nstderr:\n${result.stderr}` : ``);
             }
 
