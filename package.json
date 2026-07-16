@@ -4,8 +4,8 @@
   "description": "Interact with your Ceedling test suite from Visual Studio Code",
   "icon": "img/icon.png",
   "author": {
-    "name": "Throw The Switch",
-    "url": "https://throwtheswitch.org/"
+    "name": "IMM electronics GmbH",
+    "url": "https://imm-electronics.de"
   },
   "contributors": [
     {
@@ -13,18 +13,21 @@
     },
     {
       "name": "Mark VanderVoord"
+    },
+    {
+      "name": "René Bergelt"
     }
   ],
-  "publisher": "throw-the-switch",
-  "version": "1.0.0",
+  "publisher": "IMM electronics GmbH",
+  "version": "1.1.0",
   "license": "MIT",
-  "homepage": "https://github.com/throwtheswitch/vscode-ceedling",
+  "homepage": "https://github.com/renber/vscode-ceedling-test-adapter",
   "repository": {
     "type": "git",
-    "url": "https://github.com/throwtheswitch/vscode-ceedling.git"
+    "url": "https://github.com/renber/vscode-ceedling-test-adapter"
   },
   "bugs": {
-    "url": "https://github.com/throwtheswitch/vscode-ceedling/issues"
+    "url": "https://github.com/renber/vscode-ceedling-test-adapter/issues"
   },
   "categories": [
     "Other"
