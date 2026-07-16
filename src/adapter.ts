@@ -23,36 +23,9 @@ import xml2js from 'xml2js';
 import { Logger } from './logger';
 import { ProblemMatcher, ProblemMatchingPattern } from './problemMatcher';
 import deepmerge from 'deepmerge';
+import { ProjectData, ProjectConfig, ExtendedTestSuiteInfo, ExtendedTestInfo } from './models';
 
 const MINIMUM_CEEDLING_VERSION = '1.0.0';
-
-type ProjectData = {
-    projectPath: string,
-    ymlFileName: any,
-    absPath: string,
-    debugLaunchConfig: string,
-    files: {
-        assembly?: string[],
-        header?: string[],
-        source?: string[],
-        test?: string[],
-    }
-}
-
-type ProjectConfig = {
-    path: string,
-    debugLaunchConfig: string,
-    name?: string,
-}
-
-interface ExtendedTestSuiteInfo extends TestSuiteInfo {
-    projectKey: string | undefined,
-    isProjectRoot: boolean
-}
-
-interface ExtendedTestInfo extends TestInfo {
-    projectKey: string
-}
 
 export class CeedlingAdapter implements TestAdapter {
 
@@ -67,6 +40,11 @@ export class CeedlingAdapter implements TestAdapter {
 
     private ceedlingProcess: child_process.ChildProcess | undefined;
     private debugTestExecutable: string = '';
+
+    /**
+     * Indicates that the ceedling project file should be reloaded
+     */
+    private projectNeedsReload = true;
 
     //mapped to the project path
     private functionRegexps: Record<string, RegExp | undefined> = {};
@@ -166,11 +144,7 @@ export class CeedlingAdapter implements TestAdapter {
         }
     }
 
-    async load(): Promise<void> {
-        this.ceedlingVersionChecked = false;
-        this.logger.trace(`load()`);
-        this.testsEmitter.fire({ type: 'started' } as TestLoadStartedEvent);
-
+    async setup(): Promise<void> {
         try {
             await this.checkCeedlingVersion();
         } catch (e) {
@@ -214,7 +188,19 @@ export class CeedlingAdapter implements TestAdapter {
                 if (files) this.watchFilesForAutorun(projectKey, files);
             }
         }
-        await this.setTestSuiteInfo();
+    }
+
+    async load(): Promise<void> {        
+        this.logger.trace(`load()`);
+        this.testsEmitter.fire({ type: 'started' } as TestLoadStartedEvent);
+
+        if (this.projectNeedsReload)
+        {            
+            await this.setup()
+            this.projectNeedsReload = false;
+        }        
+  
+        await this.buildTestSuiteInfo();
         this.testsEmitter.fire({ type: 'finished', suite: this.testSuiteInfo } as TestLoadFinishedEvent);
     }
 
@@ -714,9 +700,10 @@ export class CeedlingAdapter implements TestAdapter {
         for (const file of files) {
             if (!this.watchedFileForAutorunList.includes(file)) {
                 this.watchedFileForAutorunList.push(file);
-                const fullPath = path.resolve(this.projectData[projectKey].projectPath, file);
+                const projectPath = this.projectData[projectKey].absPath; // projectPath
+                const fullPath = path.resolve(projectPath, file);
                 fs.watchFile(fullPath, () => {
-                    this.autorunEmitter.fire();
+                    this.autorunEmitter.fire();                    
                 });
             }
         }
@@ -876,8 +863,10 @@ export class CeedlingAdapter implements TestAdapter {
     private parseMultilineFunctionName(functionName: string): string {
         return functionName.replace(/\\\s*/g, '');
     }
-
-    private setTestSuiteInfo() {
+    /**
+     * (Re-)discovers tests in test files and builds the test structure for the test explorer
+     */
+    private buildTestSuiteInfo() {
         this.testSuiteInfo = {
             type: 'suite',
             id: 'root',
