@@ -4,14 +4,16 @@
     {
       "type": "extensionHost",
       "request": "launch",
-      "name": "Ceedling",
+      "name": "Launch Extensions",
       "runtimeExecutable": "${execPath}",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}"
       ],
       "outFiles": [
-        "${workspaceFolder}/out/src"
-      ]
+        "${workspaceFolder}/out/**/*.js"
+      ],
+      "preLaunchTask": "npm: compile",
+      "sourceMaps": true
     }
   ]
 }
