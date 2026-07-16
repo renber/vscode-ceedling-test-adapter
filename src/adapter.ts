@@ -18,14 +18,18 @@ import {
 } from 'vscode-test-adapter-api';
 import xml2js from 'xml2js';
 import { Logger } from './logger';
-import { ProblemMatcher, ProblemMatchingPattern } from './problemMatcher';
+import { ProblemMatcher } from './problemMatcher';
 import deepmerge from 'deepmerge';
-import { ProjectData, ProjectConfig, ExtendedTestSuiteInfo, ExtendedTestInfo } from './models';
+import { ProjectData, ExtendedTestSuiteInfo, ExtendedTestInfo } from './models';
 import { Ceedling } from './ceedling';
+import { ExtensionConfiguration } from './services/interfaces';
+import VSCodeWorkspaceConfiguration from './services/vscode/WorkspaceConfiguration';
 
 const MINIMUM_CEEDLING_VERSION = '1.0.0';
 
 export class CeedlingAdapter implements TestAdapter {
+
+    private config: ExtensionConfiguration
 
     private ceedlingVersionChecked = false;
     private disposables: { dispose(): void }[] = [];
@@ -63,8 +67,6 @@ export class CeedlingAdapter implements TestAdapter {
     };
 
     private isCanceled: boolean = false;
-    private isPrettyTestLabelEnable: boolean = false;
-    private isPrettyTestFileLabelEnable: boolean = false;
     private ceedlingMutex: Mutex = new Mutex();
 
     private ceedling: Ceedling
@@ -94,7 +96,8 @@ export class CeedlingAdapter implements TestAdapter {
         this.disposables.push(this.autorunEmitter);
         this.disposables.push(this.problemMatcher);
 
-        this.ceedling = new Ceedling(workspaceFolder, logger)
+        this.config = new VSCodeWorkspaceConfiguration(workspaceFolder)
+        this.ceedling = new Ceedling(this.config, logger)
 
         // Add debug session termination listener
         this.debugSessionDisposable = vscode.debug.onDidTerminateDebugSession((session) => {
@@ -112,7 +115,7 @@ export class CeedlingAdapter implements TestAdapter {
         // callback receive when a config property is modified
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration("ceedlingExplorer.problemMatching")) {
-                if (!this.getConfiguration().get<boolean>('problemMatching.enabled', false)) {
+                if (!this.config.isProblemMatchingEnabled()) {
                     this.problemMatcher.clear();
                 }
             }
@@ -149,13 +152,6 @@ export class CeedlingAdapter implements TestAdapter {
     }
 
     async setup(): Promise<void> {
-
-        const shell = this.getConfiguration().get<string>('shellPath', 'null');
-        if (shell !== 'null')
-        {
-            this.ceedling.shell = shell
-        }
-
         try {
             await this.checkCeedlingVersion();
         } catch (e) {
@@ -516,11 +512,7 @@ export class CeedlingAdapter implements TestAdapter {
                 `You have to edit ${this.getYmlProjectPath(projectKey)} file to enable the plugin.\n` +
                 `see https://github.com/ThrowTheSwitch/Ceedling/blob/master/plugins/report_tests_log_factory/README.md`;
         }
-    }
-
-    private getConfiguration(): vscode.WorkspaceConfiguration {
-        return vscode.workspace.getConfiguration('ceedlingExplorer', this.workspaceFolder.uri);
-    }
+    }    
 
     private getProjectKeys(): string[] {
         if (Object.keys(this.projectData).length == 0) {
@@ -530,7 +522,7 @@ export class CeedlingAdapter implements TestAdapter {
     }
 
     private loadProjectPaths() {
-        const projectConfigs = this.getConfiguration().get<object>('projects', []) as Array<ProjectConfig>;
+        const projectConfigs = this.config.getProjectConfigurations();
         this.projectData = {};
         let workspacePath = this.workspaceFolder.uri.fsPath;
         projectConfigs.forEach(projectConfig => {
@@ -618,11 +610,8 @@ export class CeedlingAdapter implements TestAdapter {
 
     private getTestCommandArgs(testToExec: string, single_test: string = ''): Array<string> {
         // Keep only the filename of the test 'test/test_foo.c' -> 'test_foo.c'
-        const testSuiteFilename = testToExec.replace(/^.*[\\/]/, "");
-        const defaultTestCommandArgs = ["test:${TEST_ID}"];
-        const testCommandArgs = this.getConfiguration()
-            .get<Array<string>>('testCommandArgs', defaultTestCommandArgs)
-            .map(x => x.replace("${TEST_ID}", testSuiteFilename));
+        const testSuiteFilename = testToExec.replace(/^.*[\\/]/, "");        
+        const testCommandArgs = this.config.getTestCommandArguments().map(x => x.replace("${TEST_ID}", testSuiteFilename));
 
         if (single_test)
         {
@@ -630,15 +619,7 @@ export class CeedlingAdapter implements TestAdapter {
         }
 
         return testCommandArgs;
-    }
-
-    private getTestCaseMacroAliases(): Array<string> {
-        return this.getConfiguration().get<Array<string>>('testCaseMacroAliases', ['TEST_CASE']);
-    }
-
-    private getTestRangeMacroAliases(): Array<string> {
-        return this.getConfiguration().get<Array<string>>('testRangeMacroAliases', ['TEST_RANGE']);
-    }
+    }    
 
     private getExecutableExtension(ymlProjectData: any = undefined) {
         let ext = process.platform == 'win32' ? '.exe' : '.out';
@@ -705,7 +686,7 @@ export class CeedlingAdapter implements TestAdapter {
                 }
             } catch (e) { }
         }
-        const macroAliases = [...this.getTestCaseMacroAliases(), ...this.getTestRangeMacroAliases()].join('|');
+        const macroAliases = [...this.config.getTestCaseMacroAliases(), ...this.config.getTestRangeMacroAliases()].join('|');
         this.functionRegexps[projectKey] = new RegExp(
             `^((?:\\s*(?:${macroAliases})\\s*\\(.*?\\)\\s*)*)\\s*void\\s+((?:${testPrefix})(?:.*\\\\\\s+)*.*)\\s*\\(\\s*(.*)\\s*\\)`,
             'gm'
@@ -789,7 +770,7 @@ export class CeedlingAdapter implements TestAdapter {
 
     private setTestLabel(projectKey: string, testName: string): string {
         let testLabel = testName;
-        if (this.isPrettyTestLabelEnable) {
+        if (this.config.usePrettyTestCaseLabel()) {
             const labelFunctionRegex = this.getTestLabelRegex(projectKey);
             let testLabelMatches = labelFunctionRegex.exec(testName);
             if (testLabelMatches != null) {
@@ -801,7 +782,7 @@ export class CeedlingAdapter implements TestAdapter {
 
     private setFileLabel(projectKey: string, fileName: string): string {
         let fileLabel = fileName;
-        if (this.isPrettyTestFileLabelEnable) {
+        if (this.config.usePrettyTestFileLabel()) {
             const labelFileRegex = this.getFileLabelRegex(projectKey);
             let labelMatches = labelFileRegex.exec(fileName);
             if (labelMatches != null) {
@@ -813,8 +794,8 @@ export class CeedlingAdapter implements TestAdapter {
 
     // Return a list of parameter from a given test token string. An empty array if there is no parameter for this test.
     private parseParametrizedTestCases(testCases: string): Array<any> {
-        const testMacroAliases = this.getTestCaseMacroAliases();
-        const macroAliases = [...testMacroAliases, ...this.getTestRangeMacroAliases()].join('|');
+        const testMacroAliases = this.config.getTestCaseMacroAliases();
+        const macroAliases = [...testMacroAliases, ...this.config.getTestRangeMacroAliases()].join('|');
         const regex = new RegExp(`\s*(${macroAliases})\s*\\((.*)\\)\s*$`, 'gm');
         return [...testCases.matchAll(regex)]
             .flatMap((x: any, i: number) => {
@@ -846,9 +827,7 @@ export class CeedlingAdapter implements TestAdapter {
             children: [],
         } as ExtendedTestSuiteInfo;
         /* get labels configuration */
-        try {
-            this.isPrettyTestFileLabelEnable = this.getConfiguration().get<boolean>('prettyTestFileLabel', false);
-            this.isPrettyTestLabelEnable = this.getConfiguration().get<boolean>('prettyTestLabel', false);
+        try {            
             if (this.getProjectKeys().length == 1) {
                 const files = this.projectData[this.getProjectKeys()[0]].files['test'];
                 if (files) {
@@ -1192,8 +1171,8 @@ export class CeedlingAdapter implements TestAdapter {
             }
 
             this.problemMatcher.scan(testSuite.id, result.stdout, result.stderr, this.projectData[testSuite.projectKey].projectPath,
-                this.getConfiguration().get<string>('problemMatching.mode', ""),
-                this.getConfiguration().get<ProblemMatchingPattern[]>('problemMatching.patterns', []));
+                this.config.getProblemMatchingMode(),
+                this.config.getProblemMatchingPatterns());
 
             const xmlReportData = await this.getXmlReportData(testSuite.projectKey);
             this.logger.debug(`xmlReportData=${util.format(xmlReportData)}`);

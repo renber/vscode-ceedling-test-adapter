@@ -1,26 +1,21 @@
 import { Logger } from './logger';
 import stripAnsi from 'strip-ansi';
 import util from 'util';
-import vscode from 'vscode';
 import child_process from 'child_process';
 import tree_kill from 'tree-kill';
 import { ProjectData } from './models';
+import { ExtensionConfiguration } from './services/interfaces';
 
 export class Ceedling
 {
     private ceedlingProcess: child_process.ChildProcess | undefined;
-    public shell: string | undefined = undefined
 
     constructor(    
-        private readonly workspaceFolder: vscode.WorkspaceFolder,
+        private readonly config : ExtensionConfiguration,
         private readonly logger: Logger,
     ) {
-
+        // --
     }    
-
-    private getConfiguration(): vscode.WorkspaceConfiguration {
-        return vscode.workspace.getConfiguration('ceedlingExplorer', this.workspaceFolder.uri);
-    }
 
     public async getCeedlingVersion(): Promise<string> {
         const result = await this.execCeedling(['version'], undefined);
@@ -37,13 +32,6 @@ export class Ceedling
         const line = `ceedling ${args.join(" ")}`;
         return line;
     }
-
-    
-    /*
-    private getShellPath(): string | undefined {
-        const shellPath = this.getConfiguration().get<string>('shellPath', 'null');
-        return shellPath !== "null" ? shellPath : undefined;        
-    }*/
     
     public execCeedling(args: ReadonlyArray<string>, projectData: ProjectData | undefined): Promise<any> {
         let cwd = ".";
@@ -59,12 +47,12 @@ export class Ceedling
 
         let command = this.getCeedlingCommand(args);
         
-        this.logger.debug(`execCeedling(args=${util.format(args)}) \ncommand=${command} \ncwd=${cwd} \nshell=${this.shell}`);
+        this.logger.debug(`execCeedling(args=${util.format(args)}) \ncommand=${command} \ncwd=${cwd} \nshell=${this.config.getShellPath()}`);
         return new Promise<any>((resolve) => {
             this.ceedlingProcess = child_process.exec(
-                command, { cwd: cwd, shell: this.shell },
+                command, { cwd: cwd, shell: this.config.getShellPath() },
                 (error, stdout, stderr) => {
-                    const ansiEscapeSequencesRemoved = this.getConfiguration().get<boolean>('ansiEscapeSequencesRemoved', true);
+                    const ansiEscapeSequencesRemoved = this.config.getAnsiEscapeSequencesRemoved()
                     if (ansiEscapeSequencesRemoved) {
                         // Remove ansi colors from the outputs
                         stdout = stripAnsi(stdout);
